@@ -9,8 +9,6 @@ using Files.App.ViewModels.Settings;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Win32;
-using Sentry;
-using Sentry.Protocol;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -42,11 +40,6 @@ namespace Files.App.Helpers
 		/// Gets the value that indicates the total launch count of the app.
 		/// </summary>
 		public static long TotalLaunchCount { get; }
-
-		/// <summary>
-		/// Gets the value that indicates if the release notes tab was automatically opened.
-		/// </summary>
-		private static bool ViewedReleaseNotes { get; set; } = false;
 
 		static AppLifecycleHelper()
 		{
@@ -104,8 +97,6 @@ namespace Files.App.Helpers
 			var generalSettingsService = userSettingsService.GeneralSettingsService;
 			var jumpListService = Ioc.Default.GetRequiredService<IWindowsJumpListService>();
 
-			ActiveSessionTracker.ReportPersistedTime();
-
 			// Start non-critical tasks without waiting; pinned loads alongside the others so its shell enumeration doesn't block them.
 			_ = Task.Run(async () =>
 			{
@@ -127,14 +118,6 @@ namespace Files.App.Helpers
 
 			_ = Task.Run(FileTagsHelper.UpdateTagsDb);
 
-			_ = Task.Run(async () =>
-			{
-				// The follwing method invokes UI thread, so we run it in a separate task
-				await CheckAppUpdate();
-
-				await PeriodicallyCheckForUpdatesAsync();
-			});
-
 			static Task OptionalTaskAsync(Task task, bool condition)
 			{
 				if (condition)
@@ -144,157 +127,6 @@ namespace Files.App.Helpers
 			}
 
 			generalSettingsService.PropertyChanged += GeneralSettingsService_PropertyChanged;
-		}
-
-		/// <summary>
-		/// Checks application updates and download if available.
-		/// </summary>
-		public static async Task CheckAppUpdate()
-		{
-			var updateService = Ioc.Default.GetRequiredService<IUpdateService>();
-
-			await updateService.CheckForReleaseNotesAsync();
-
-			// Check for release notes before checking for new updates
-			if (AppEnvironment != AppEnvironment.Dev &&
-				IsAppUpdated &&
-				updateService.AreReleaseNotesAvailable &&
-				!ViewedReleaseNotes)
-			{
-				ViewedReleaseNotes = true;
-
-				// Open after the startup tabs have loaded so the release notes tab doesn't disturb the restored session order
-				_ = Task.Run(async () =>
-				{
-					await MainPageViewModel.StartupTabsLoadedTask;
-
-					await MainWindow.Instance.DispatcherQueue.EnqueueOrInvokeAsync(async () =>
-					{
-						await Ioc.Default.GetRequiredService<ICommandManager>().OpenReleaseNotes.ExecuteAsync();
-					});
-				});
-			}
-
-			await updateService.CheckForUpdatesAsync();
-			await updateService.DownloadMandatoryUpdatesAsync();
-
-			if (IsAppUpdated)
-				await updateService.CheckAndUpdateFilesLauncherAsync();
-		}
-
-		/// <summary>
-		/// Periodically re-checks for updates while the app keeps running.
-		/// </summary>
-		public static async Task PeriodicallyCheckForUpdatesAsync()
-		{
-			var updateService = Ioc.Default.GetRequiredService<IUpdateService>();
-
-			var interval = AppEnvironment is AppEnvironment.SideloadPreview or AppEnvironment.StorePreview
-				? TimeSpan.FromHours(2)
-				: TimeSpan.FromHours(5);
-
-			using var timer = new PeriodicTimer(interval);
-			while (await timer.WaitForNextTickAsync())
-			{
-				if (updateService.IsUpdateAvailable)
-					break;
-
-				// CheckForUpdatesAsync resets IsUpdateAvailable, so skip while a download is in progress
-				if (updateService.IsUpdating)
-					continue;
-
-				await updateService.CheckForUpdatesAsync();
-			}
-		}
-
-		/// <summary>
-		/// Configures Sentry service, such as Analytics and Crash Report.
-		/// </summary>
-		public static void ConfigureSentry()
-		{
-			SentrySdk.Init(options =>
-			{
-				options.Dsn = Constants.AutomatedWorkflowInjectionKeys.SentrySecret;
-				options.AutoSessionTracking = true;
-				var packageVersion = Package.Current.Id.Version;
-				options.Release = $"{packageVersion.Major}.{packageVersion.Minor}.{packageVersion.Build}";
-				options.TracesSampleRate = 0.10;
-				// Active-session reports must not be sampled away or their sums undercount;
-				// returning null falls back to TracesSampleRate for everything else
-				options.TracesSampler = context =>
-					context.TransactionContext.Operation == ActiveSessionTracker.TransactionOperation ? 1.0 : null;
-				options.ProfilesSampleRate = 0.05;
-				options.Environment = AppEnvironment == AppEnvironment.StorePreview || AppEnvironment == AppEnvironment.SideloadPreview ? "preview" : "production";
-				options.CacheDirectoryPath = ApplicationData.Current.LocalFolder.Path;
-
-				options.DisableWinUiUnhandledExceptionIntegration();
-
-				options.SetBeforeSend(sentryEvent =>
-				{
-					if (sentryEvent.Message is { } message)
-					{
-						message.Message = SanitizeSentryText(message.Message);
-						message.Formatted = SanitizeSentryText(message.Formatted);
-					}
-
-					if (sentryEvent.SentryExceptions is { } sentryExceptions)
-					{
-						foreach (var sentryException in sentryExceptions)
-						{
-							sentryException.Value = SanitizeSentryText(sentryException.Value);
-
-							if (sentryException.Stacktrace?.Frames is { } frames)
-							{
-								foreach (var frame in frames)
-								{
-									frame.FileName = LogPathHelper.RedactUserName(frame.FileName);
-									frame.AbsolutePath = LogPathHelper.RedactUserName(frame.AbsolutePath);
-								}
-							}
-						}
-					}
-
-					foreach (var key in sentryEvent.Extra.Keys.ToList())
-					{
-						if (sentryEvent.Extra[key] is string text)
-							sentryEvent.SetExtra(key, SanitizeSentryText(text) ?? string.Empty);
-					}
-
-					return sentryEvent;
-				});
-
-				options.SetBeforeBreadcrumb(breadcrumb =>
-				{
-					var message = SanitizeSentryText(breadcrumb.Message);
-
-					Dictionary<string, string>? sanitizedData = null;
-					if (breadcrumb.Data is { } data)
-					{
-						foreach (var (key, value) in data)
-						{
-							var sanitizedValue = SanitizeSentryText(value);
-							if (sanitizedValue != value)
-							{
-								sanitizedData ??= new(data);
-								sanitizedData[key] = sanitizedValue ?? string.Empty;
-							}
-						}
-					}
-
-					if (message == breadcrumb.Message && sanitizedData is null)
-						return breadcrumb;
-
-					return new Breadcrumb(message!, breadcrumb.Type!, sanitizedData ?? breadcrumb.Data, breadcrumb.Category, breadcrumb.Level);
-				});
-			});
-		}
-
-		/// <summary>
-		/// Scrubs user names and file system paths from text before it is attached to a Sentry event.
-		/// </summary>
-		private static string? SanitizeSentryText(string? text)
-		{
-			return text is null ? null : LogPathHelper.SanitizeMessage(text);
 		}
 
 		/// <summary>
@@ -311,7 +143,6 @@ namespace Files.App.Helpers
 			services.AddLogging(builder => builder
 					.AddDebug()
 					.AddProvider(fileLoggerProvider)
-					.AddProvider(new SentryLoggerProvider())
 					.SetMinimumLevel(LogLevel.Information));
 
 			services
@@ -395,13 +226,7 @@ namespace Files.App.Helpers
 					.AddSingleton<LibraryManager>()
 					.AddSingleton(appModel);
 
-			// Conditional DI
-			if (AppEnvironment is AppEnvironment.SideloadPreview or AppEnvironment.SideloadStable)
-				services.AddSingleton<IUpdateService, SideloadUpdateService>();
-			else if (AppEnvironment is AppEnvironment.StorePreview or AppEnvironment.StoreStable)
-				services.AddSingleton<IUpdateService, StoreUpdateService>();
-			else
-				services.AddSingleton<IUpdateService, DummyUpdateService>();
+			services.AddSingleton<IUpdateService, DummyUpdateService>();
 
 			return services.BuildServiceProvider();
 		}
@@ -503,9 +328,6 @@ namespace Files.App.Helpers
 		{
 			try
 			{
-				// IoC may not be configured yet if the exception happened during early startup
-				var generalSettingsService = SafetyExtensions.IgnoreExceptions(Ioc.Default.GetService<IGeneralSettingsService>);
-
 				StringBuilder formattedException = new()
 				{
 					Capacity = 200
@@ -515,26 +337,6 @@ namespace Files.App.Helpers
 
 				if (ex is not null)
 				{
-					ex.Data[Mechanism.HandledKey] = false;
-					ex.Data[Mechanism.MechanismKey] = mechanism;
-
-					SafetyExtensions.IgnoreExceptions(() =>
-					{
-						SentrySdk.CaptureException(ex, scope =>
-						{
-							scope.User.Id = generalSettingsService?.UserId;
-							scope.Level = SentryLevel.Fatal;
-							scope.SetTag("hresult", $"0x{ex.HResult:X8}");
-
-							if (!string.IsNullOrEmpty(unhandledMessage))
-								scope.SetExtra("unhandled_message", unhandledMessage);
-
-							// Exception.ToString of a buffered exception may run a throwing override
-							if (string.IsNullOrEmpty(ex.StackTrace))
-								scope.SetExtra("recent_exceptions", SafetyExtensions.IgnoreExceptions(FormatRecentExceptions));
-						});
-					});
-
 					formattedException.AppendLine($">>>> HRESULT: {ex.HResult}");
 
 					if (unhandledMessage is not null)

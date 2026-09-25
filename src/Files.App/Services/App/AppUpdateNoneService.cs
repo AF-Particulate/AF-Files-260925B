@@ -1,5 +1,4 @@
-﻿using System.Net.Http;
-
+﻿
 namespace Files.App.Services
 {
 	internal sealed partial class DummyUpdateService : ObservableObject, IUpdateService
@@ -31,19 +30,10 @@ namespace Files.App.Services
 			return Task.CompletedTask;
 		}
 
-		public async Task CheckForReleaseNotesAsync()
+		public Task CheckForReleaseNotesAsync()
 		{
-			using var client = new HttpClient();
-
-			try
-			{
-				var response = await client.GetAsync(Constants.ExternalUrl.ReleaseNotesUrl);
-				AreReleaseNotesAvailable = response.IsSuccessStatusCode;
-			}
-			catch
-			{
-				AreReleaseNotesAvailable = false;
-			}
+			AreReleaseNotesAvailable = false;
+			return Task.CompletedTask;
 		}
 
 		public Task DownloadMandatoryUpdatesAsync()

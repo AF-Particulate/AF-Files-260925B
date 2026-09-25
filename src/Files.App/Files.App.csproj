@@ -1,4 +1,4 @@
-﻿<!--  Copyright (c) Files Community. Licensed under the MIT License.  -->
+<!--  Copyright (c) Files Community. Licensed under the MIT License.  -->
 <Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
@@ -45,11 +45,6 @@
         <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
     </PropertyGroup>
 
-    <PropertyGroup Condition="'$(SENTRY_AUTH_TOKEN)' != ''">
-        <SentryOrg>files-org</SentryOrg>
-        <SentryProject>files-app</SentryProject>
-        <SentryUploadSymbols>true</SentryUploadSymbols>
-    </PropertyGroup>
 
     <ItemGroup>
         <DirectPInvoke Include="ADVAPI32" />
@@ -120,7 +115,6 @@
         <PackageReference Include="Microsoft.Extensions.Logging.Debug" />
         <PackageReference Include="Microsoft.Windows.SDK.BuildTools" />
         <PackageReference Include="Microsoft.Xaml.Behaviors.WinUI.Managed" />
-        <PackageReference Include="Sentry" />
         <PackageReference Include="SevenZipSharp" />
         <PackageReference Include="SharpZipLib" />
         <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" />

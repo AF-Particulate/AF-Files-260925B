@@ -57,12 +57,10 @@ jobs:
           -Publisher "$env:STORE_PUBLISHER_SECRET" `
           -WorkingDir "$env:WORKING_DIR" `
           -SecretBingMapsKey "$env:SECRET_BINGMAPS_KEY" `
-          -SecretSentry "$env:SECRET_SENTRY" `
           -SecretGitHubOAuthClientId "$env:SECRET_GITHUB_OAUTH_CLIENT_ID"
       env:
         STORE_PUBLISHER_SECRET: ${{ secrets.STORE_PUBLISHER_SECRET }}
         SECRET_BINGMAPS_KEY: ${{ secrets.BING_MAPS_SECRET }}
-        SECRET_SENTRY: ${{ secrets.SENTRY_SECRET }}
         SECRET_GITHUB_OAUTH_CLIENT_ID: ${{ secrets.GH_OAUTH_CLIENT_ID }}
 
     - name: Restore Files
@@ -132,17 +130,6 @@ jobs:
             -p:UapAppxPackageBuildMode=StoreUpload `
             -v:quiet
         }
-      env:
-        SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-
-    - name: Upload debug symbols to Sentry
-      shell: pwsh
-      run: |
-        if (-not $env:SENTRY_AUTH_TOKEN) { Write-Host 'SENTRY_AUTH_TOKEN not set; skipping symbol upload'; exit 0 }
-        npm install --global @sentry/cli
-        sentry-cli debug-files upload --org files-org --project files-app src\Files.App\bin src\Files.App\obj
-      env:
-        SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
 
     - name: Create msixbundle and msixupload
       shell: pwsh
