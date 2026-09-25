@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 
 using Microsoft.Extensions.Logging;
-using Sentry;
 using System.Drawing;
 using System.Runtime.InteropServices;
 using Windows.ApplicationModel;
@@ -334,14 +333,7 @@ namespace Files.App.Utils.Taskbar
 			}
 			catch (Exception ex)
 			{
-				SentrySdk.CaptureException(ex, scope =>
-				{
-					scope.Level = SentryLevel.Fatal;
-					scope.SetTag("location", "SystemTrayIcon.OnQuitClicked");
-					scope.SetExtra("AppModelIsNull", App.AppModel is null);
-					scope.SetExtra("AppCurrentIsNull", App.Current is null);
-					scope.SetExtra("ProgramPoolIsNull", Program.Pool is null);
-				});
+				App.Logger?.LogError(ex, "Failed to quit from system tray.");
 
 				// The user requested quit; force termination as a last resort
 				Environment.Exit(0);

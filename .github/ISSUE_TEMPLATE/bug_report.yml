@@ -56,7 +56,7 @@ body:
     id: user_id
     attributes:
       label: User ID
-      description: Your User ID is a GUID that can be matched up with bug reports in Sentry. To copy your User ID, access it from Settings -> About -> Copy -> User ID.
+      description: Your User ID is a GUID that helps maintainers correlate diagnostics. To copy your User ID, access it from Settings -> About -> Copy -> User ID.
       placeholder: "74750836-5885-4eeb-964f-8177cb4babf6"
     validations:
       required: false
