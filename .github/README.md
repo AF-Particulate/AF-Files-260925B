@@ -39,6 +39,20 @@ You can also use the preview version alongside the stable release to get early a
 
 Instructions for building the source code can be found on our [documentation site](https://files.community/docs/contributing/building-from-source).
 
+### Packaging a Windows-installable artifact
+
+GitHub Actions now includes a **Files Package Artifact** workflow that builds the existing MSIX packaging configuration and uploads the result as a workflow artifact. Open the workflow run in the **Actions** tab and download the **Files-MSIX-Package** artifact from the run summary.
+
+For local Windows packaging, use a Visual Studio 2026 Developer PowerShell and run the same steps as CI:
+
+```powershell
+.\.github\scripts\Generate-SelfCertPfx.ps1 -Destination .\artifacts\signing\Files.Package.SelfSigned.pfx
+msbuild -restore Files.slnx -p:Configuration=Release -p:Platform=x64 -v:quiet -clp:ErrorsOnly
+nuget restore .\src\Files.App.Launcher\Files.App.Launcher.vcxproj -SolutionDirectory $PWD
+msbuild .\src\Files.App.Launcher\Files.App.Launcher.vcxproj -t:Build -p:Configuration=Release -p:Platform=x64 -v:quiet -clp:ErrorsOnly
+```
+
+Then build the app packages for `x64` and `arm64`, run `.\.github\scripts\Create-MsixBundle.ps1`, and sign the resulting `.msixbundle` with the same certificate. If you configure the optional GitHub Actions secrets `WINDOWS_PACKAGE_CERTIFICATE_PFX_BASE64` and `WINDOWS_PACKAGE_CERTIFICATE_PASSWORD`, the workflow will use that certificate instead of the temporary self-signed one. The certificate must match the manifest publisher (`CN=Files` for the current dev package).
 
 ## Contributing to Files
 
