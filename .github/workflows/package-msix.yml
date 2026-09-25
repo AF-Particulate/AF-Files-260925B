@@ -113,7 +113,7 @@ jobs:
             $certificateMode = 'self-signed'
           }
 
-          $certificate = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(
+          $certificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(
             $certificatePath,
             $certificatePassword,
             [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable)

@@ -43,16 +43,23 @@ Instructions for building the source code can be found on our [documentation sit
 
 GitHub Actions now includes a **Files Package Artifact** workflow that builds the existing MSIX packaging configuration and uploads the result as a workflow artifact. Open the workflow run in the **Actions** tab and download the **Files-MSIX-Package** artifact from the run summary.
 
-For local Windows packaging, use a Visual Studio 2026 Developer PowerShell and run the same steps as CI:
+For local Windows packaging, use a Visual Studio 2026 Developer PowerShell and run:
 
 ```powershell
 .\.github\scripts\Generate-SelfCertPfx.ps1 -Destination .\artifacts\signing\Files.Package.SelfSigned.pfx
 msbuild -restore Files.slnx -p:Configuration=Release -p:Platform=x64 -v:quiet -clp:ErrorsOnly
 nuget restore .\src\Files.App.Launcher\Files.App.Launcher.vcxproj -SolutionDirectory $PWD
 msbuild .\src\Files.App.Launcher\Files.App.Launcher.vcxproj -t:Build -p:Configuration=Release -p:Platform=x64 -v:quiet -clp:ErrorsOnly
+foreach ($platform in 'x64', 'arm64') {
+  msbuild .\src\Files.App\Files.App.csproj -t:Build -p:Configuration=Release -p:Platform=$platform -p:AppxPackageDir=.\artifacts\AppxPackages\ -p:AppxBundle=Never -p:GenerateAppxPackageOnBuild=true -p:UapAppxPackageBuildMode=SideloadOnly -p:AppxPackageSigningEnabled=true -p:PackageCertificateKeyFile=.\artifacts\signing\Files.Package.SelfSigned.pfx -p:PackageCertificatePassword="" -p:PackageCertificateThumbprint="" -v:quiet -clp:ErrorsOnly
+}
+.\.github\scripts\Create-MsixBundle.ps1 -AppxPackageDir .\artifacts\AppxPackages\ -BundleName Files.Package -PackageManifestPath .\src\Files.App\Package.appxmanifest -BuildMode SideloadOnly
+Get-ChildItem .\artifacts\AppxPackages\ -Filter *.msixbundle -Recurse | ForEach-Object {
+  signtool sign /fd SHA256 /f .\artifacts\signing\Files.Package.SelfSigned.pfx $_.FullName
+}
 ```
 
-Then build the app packages for `x64` and `arm64`, run `.\.github\scripts\Create-MsixBundle.ps1`, and sign the resulting `.msixbundle` with the same certificate. If you configure the optional GitHub Actions secrets `WINDOWS_PACKAGE_CERTIFICATE_PFX_BASE64` and `WINDOWS_PACKAGE_CERTIFICATE_PASSWORD`, the workflow will use that certificate instead of the temporary self-signed one. The certificate must match the manifest publisher (`CN=Files` for the current dev package).
+If you configure the optional GitHub Actions secrets `WINDOWS_PACKAGE_CERTIFICATE_PFX_BASE64` and `WINDOWS_PACKAGE_CERTIFICATE_PASSWORD`, the workflow will use that certificate instead of the temporary self-signed one. The certificate must match the manifest publisher (`CN=Files` for the current dev package).
 
 ## Contributing to Files
 
