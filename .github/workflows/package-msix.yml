@@ -1,0 +1,231 @@
+name: Files Package Artifact
+
+on:
+  workflow_dispatch:
+    inputs:
+      appInstallerUri:
+        description: Optional base URI used to generate a .appinstaller file
+        required: false
+        type: string
+  pull_request:
+    paths:
+      - '.github/workflows/package-msix.yml'
+      - '.github/scripts/**'
+      - 'Directory.Build.props'
+      - 'Directory.Packages.props'
+      - 'Files.slnx'
+      - 'global.json'
+      - 'nuget.config'
+      - 'src/**'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/package-msix.yml'
+      - '.github/scripts/**'
+      - 'Directory.Build.props'
+      - 'Directory.Packages.props'
+      - 'Files.slnx'
+      - 'global.json'
+      - 'nuget.config'
+      - 'src/**'
+
+permissions:
+  contents: read
+
+env:
+  WORKING_DIR: '${{ github.workspace }}'
+  SOLUTION_PATH: '${{ github.workspace }}\Files.slnx'
+  APP_PROJECT_PATH: '${{ github.workspace }}\src\Files.App\Files.App.csproj'
+  APPX_PACKAGE_DIR: '${{ github.workspace }}\artifacts\AppxPackages\'
+  ARTIFACTS_STAGING_DIR: '${{ github.workspace }}\artifacts'
+  CONFIGURATION: 'Release'
+  PRIMARY_PLATFORM: 'x64'
+  APPX_BUNDLE_PLATFORMS: 'x64|arm64'
+  LAUNCHER_PROJECT_PATH: '${{ github.workspace }}\src\Files.App.Launcher\Files.App.Launcher.vcxproj'
+  PACKAGE_MANIFEST_PATH: '${{ github.workspace }}\src\Files.App\Package.appxmanifest'
+  SELF_SIGNED_CERT_PATH: '${{ github.workspace }}\artifacts\signing\Files.Package.SelfSigned.pfx'
+  PACKAGE_CERT_PUBLIC_PATH: '${{ github.workspace }}\artifacts\signing\Files.Package.cer'
+  PROVIDED_CERT_PATH: '${{ github.workspace }}\artifacts\signing\Files.Package.Provided.pfx'
+  APP_INSTALLER_URI: '${{ inputs.appInstallerUri }}'
+
+jobs:
+  package:
+    runs-on: windows-2025-vs2026
+
+    steps:
+      - name: Checkout the repository
+        uses: actions/checkout@v6
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v3
+
+      - name: Setup NuGet
+        uses: NuGet/setup-nuget@v3
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      - name: Prepare artifact directories
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:ARTIFACTS_STAGING_DIR" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$env:APPX_PACKAGE_DIR" | Out-Null
+          New-Item -ItemType Directory -Force -Path (Split-Path "$env:SELF_SIGNED_CERT_PATH" -Parent) | Out-Null
+
+      - name: Restore Files
+        shell: pwsh
+        run: |
+          msbuild "$env:SOLUTION_PATH" `
+            -t:Restore `
+            -p:Platform=$env:PRIMARY_PLATFORM `
+            -p:Configuration=$env:CONFIGURATION `
+            -p:PublishReadyToRun=true `
+            -v:quiet `
+            -clp:ErrorsOnly
+
+      - name: Restore NuGet packages for launcher project
+        shell: pwsh
+        run: |
+          nuget restore "$env:LAUNCHER_PROJECT_PATH" `
+            -SolutionDirectory "$env:WORKING_DIR" `
+            -Verbosity detailed
+
+      - name: Prepare signing certificate
+        shell: pwsh
+        env:
+          WINDOWS_PACKAGE_CERTIFICATE_PFX_BASE64: ${{ secrets.WINDOWS_PACKAGE_CERTIFICATE_PFX_BASE64 }}
+          WINDOWS_PACKAGE_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_PACKAGE_CERTIFICATE_PASSWORD }}
+        run: |
+          if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_PACKAGE_CERTIFICATE_PFX_BASE64)) {
+            [System.IO.File]::WriteAllBytes(
+              $env:PROVIDED_CERT_PATH,
+              [Convert]::FromBase64String($env:WINDOWS_PACKAGE_CERTIFICATE_PFX_BASE64))
+            $certificatePath = $env:PROVIDED_CERT_PATH
+            $certificatePassword = $env:WINDOWS_PACKAGE_CERTIFICATE_PASSWORD
+            $certificateMode = 'provided'
+          } else {
+            . './.github/scripts/Generate-SelfCertPfx.ps1' -Destination "$env:SELF_SIGNED_CERT_PATH"
+            $certificatePath = $env:SELF_SIGNED_CERT_PATH
+            $certificatePassword = ''
+            $certificateMode = 'self-signed'
+          }
+
+          $certificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(
+            $certificatePath,
+            $certificatePassword,
+            [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable)
+          Export-Certificate -Cert $certificate -FilePath "$env:PACKAGE_CERT_PUBLIC_PATH" | Out-Null
+
+          "PACKAGE_CERT_PATH=$certificatePath" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "PACKAGE_CERT_PASSWORD=$certificatePassword" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "PACKAGE_CERT_MODE=$certificateMode" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "PACKAGE_CERT_PUBLIC_PATH=$env:PACKAGE_CERT_PUBLIC_PATH" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Build launcher project
+        shell: pwsh
+        run: |
+          msbuild "$env:LAUNCHER_PROJECT_PATH" `
+            -t:Build `
+            -p:Platform=$env:PRIMARY_PLATFORM `
+            -p:Configuration=$env:CONFIGURATION `
+            -v:quiet `
+            -clp:ErrorsOnly
+
+      - name: Build and package Files
+        shell: pwsh
+        run: |
+          $platforms = "$env:APPX_BUNDLE_PLATFORMS" -split '\|'
+          foreach ($plat in $platforms) {
+            Write-Host "Building package for $plat..."
+            msbuild "$env:APP_PROJECT_PATH" `
+              -t:Build `
+              -p:Platform=$plat `
+              -p:Configuration=$env:CONFIGURATION `
+              -p:AppxPackageDir="$env:APPX_PACKAGE_DIR" `
+              -p:AppxBundle=Never `
+              -p:GenerateAppxPackageOnBuild=true `
+              -p:UapAppxPackageBuildMode=SideloadOnly `
+              -p:AppxPackageSigningEnabled=true `
+              -p:PackageCertificateKeyFile="$env:PACKAGE_CERT_PATH" `
+              -p:PackageCertificatePassword="$env:PACKAGE_CERT_PASSWORD" `
+              -p:PackageCertificateThumbprint="" `
+              -v:quiet `
+              -clp:ErrorsOnly
+          }
+
+      - name: Create MSIX bundle
+        shell: pwsh
+        run: |
+          $createBundleParams = @{
+            AppxPackageDir = $env:APPX_PACKAGE_DIR
+            BundleName = 'Files.Package'
+            PackageManifestPath = $env:PACKAGE_MANIFEST_PATH
+            BuildMode = 'SideloadOnly'
+          }
+
+          if (-not [string]::IsNullOrWhiteSpace($env:APP_INSTALLER_URI)) {
+            $appInstallerUri = $env:APP_INSTALLER_URI
+            if (-not $appInstallerUri.EndsWith('/')) {
+              $appInstallerUri += '/'
+            }
+            $createBundleParams.AppInstallerUri = $appInstallerUri
+            $createBundleParams.BuildMode = 'Sideload'
+          }
+
+          . './.github/scripts/Create-MsixBundle.ps1' @createBundleParams
+
+      - name: Sign MSIX bundle
+        shell: pwsh
+        run: |
+          $signtool = Get-ChildItem -Path "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Filter 'signtool.exe' -Recurse -ErrorAction Stop |
+            Where-Object { $_.DirectoryName -match '\\x64$' } |
+            Sort-Object { [version]($_.DirectoryName -replace '^.*\\bin\\([^\\]+)\\.*$', '$1') } -Descending |
+            Select-Object -First 1
+          if ($null -eq $signtool) {
+            throw 'signtool.exe was not found.'
+          }
+
+          Get-ChildItem -Path "$env:APPX_PACKAGE_DIR" -Filter '*.msixbundle' -Recurse | ForEach-Object {
+            $arguments = @('sign', '/fd', 'SHA256', '/f', $env:PACKAGE_CERT_PATH)
+            if (-not [string]::IsNullOrWhiteSpace($env:PACKAGE_CERT_PASSWORD)) {
+              $arguments += @('/p', $env:PACKAGE_CERT_PASSWORD)
+            }
+            $arguments += $_.FullName
+            & $signtool.FullName @arguments
+            if ($LASTEXITCODE -ne 0) {
+              throw "signtool failed for $($_.FullName) with exit code $LASTEXITCODE"
+            }
+          }
+
+      - name: Write artifact instructions
+        shell: pwsh
+        run: |
+          $lines = @(
+            'Files packaging artifact',
+            '',
+            'The installable package is under AppxPackages.',
+            'If a .appinstaller file is present, host the whole AppxPackages folder and open that file on Windows.',
+            'Otherwise install the .msixbundle from Windows after extracting the artifact.',
+            'If Windows does not already trust the signing chain, import Files.Package.cer before opening the package.'
+          )
+
+          if ($env:PACKAGE_CERT_MODE -eq 'self-signed') {
+            $lines += ''
+            $lines += 'This run used a temporary self-signed certificate.'
+          }
+
+          Set-Content -Path (Join-Path $env:ARTIFACTS_STAGING_DIR 'README.txt') -Value $lines
+
+      - name: Remove empty files from artifacts
+        shell: bash
+        run: find "$ARTIFACTS_STAGING_DIR" -empty -delete
+
+      - name: Upload package artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: Files-MSIX-Package
+          path: ${{ env.ARTIFACTS_STAGING_DIR }}
+          retention-days: 14
