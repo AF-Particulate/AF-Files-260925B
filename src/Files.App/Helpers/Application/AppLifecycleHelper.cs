@@ -337,6 +337,7 @@ namespace Files.App.Helpers
 
 				if (ex is not null)
 				{
+					formattedException.AppendLine($">>>> MECHANISM: {mechanism}");
 					formattedException.AppendLine($">>>> HRESULT: {ex.HResult}");
 
 					if (unhandledMessage is not null)
